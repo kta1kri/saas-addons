@@ -7,6 +7,7 @@ import logging
 import werkzeug
 from werkzeug.urls import Href, url_encode
 from odoo import SUPERUSER_ID
+from odoo.exceptions import AccessError, MissingError
 from odoo.addons.http_routing.models.ir_http import slugify
 from odoo.addons.saas_portal.controllers.portal import CustomerPortal
 
@@ -109,12 +110,20 @@ class Main(Controller):
 
 
 class CustomerPortal(CustomerPortal):
-    @route(["/my/build/<int:build_id>/renew_subscription"], type="http", auth="public", website=True)
+    @route(["/my/build/<int:build_id>/renew_subscription"], type="http", auth="user", website=True)
     def portal_my_build_renew_subscription(self, build_id=None, access_token=None, **kw):
-        # build_sudo = self._document_check_access("saas.db", build_id, access_token)  # does not work, 'cos of ir.model.access error
-        build_sudo = request.env["saas.db"].sudo().browse(build_id)
+        # Authorize like the other /my/build/<id> routes in saas_portal: either the
+        # current user may read the build, or a valid per-record access_token is given.
+        # Without this check the route was auth="public" and sudo()-browsed an
+        # attacker-supplied, enumerable build_id, exposing every tenant's invoice
+        # (and triggering invoice creation) across the whole operator.
+        try:
+            build_sudo = self._document_check_access("saas.db", build_id, access_token)
+        except (AccessError, MissingError):
+            return request.redirect("/my")
 
-        assert build_sudo.contract_id, "Following build does not have contract"
+        if not build_sudo.contract_id:
+            return request.redirect("/my")
 
         contract = build_sudo.contract_id
 
